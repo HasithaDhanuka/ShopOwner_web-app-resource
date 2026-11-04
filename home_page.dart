@@ -11,6 +11,7 @@ import 'package:web_app/widgets/bottom_bar.dart';
 import 'package:web_app/widgets/content_view.dart';
 import 'package:web_app/widgets/custom_tab.dart';
 import 'package:web_app/screen/create_item_view.dart';
+import 'package:web_app/screen/data_analysis_view.dart';
 import 'package:web_app/screen/foodItems_view.dart';
 import 'package:web_app/screen/order_view.dart';
 import 'package:web_app/widgets/background.dart';
@@ -148,10 +149,18 @@ class _HomePageState extends State<HomePage>
           tabs: contentViews.map((e) => e.tab).toList(),
         ),
         SizedBox(
-          height: screenHeight * 0.8,
+          height: screenHeight * 0.72,
           child: TabBarView(
             controller: tabController,
             children: contentViews.map((e) => e.content).toList(),
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: screenHeight * 0.01),
+          child: FilledButton.icon(
+            onPressed: openDataAnalysis,
+            icon: const Icon(Icons.analytics_outlined),
+            label: const Text('Data Analysis'),
           ),
         ),
         const BottomBar(),
@@ -204,11 +213,32 @@ class _HomePageState extends State<HomePage>
                     physics:
                         const ScrollPhysics(parent: BouncingScrollPhysics()),
                     itemScrollController: _itemScrollController,
-                    itemCount: contentViews.length,
-                    itemBuilder: (context, index) =>
-                        contentViews[index].content)),
+                    itemCount: contentViews.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == contentViews.length) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          child: Center(
+                            child: FilledButton.icon(
+                              onPressed: openDataAnalysis,
+                              icon: const Icon(Icons.analytics_outlined),
+                              label: const Text('Data Analysis'),
+                            ),
+                          ),
+                        );
+                      }
+                      return contentViews[index].content;
+                    })),
           ],
         ),
+      ),
+    );
+  }
+
+  void openDataAnalysis() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => const DataAnalysisView(),
       ),
     );
   }

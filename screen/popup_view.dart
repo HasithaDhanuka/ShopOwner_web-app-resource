@@ -16,7 +16,7 @@ import 'package:web_app/provider_function/logic_function.dart';
 import 'package:maps_launcher/maps_launcher.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/userOrderCart.dart';
-import 'package:web_app/invoice_pdf/pdf_view_screen.dart';
+//import 'package:web_app/invoice_pdf/pdf_view_screen.dart';
 
 // ***************************************************************//
 // ####################   PopUp Item    ##########################//
