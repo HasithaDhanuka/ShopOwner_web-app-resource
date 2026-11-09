@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:web_app/model/food.dart';
 import 'package:web_app/model/user_order.dart';
 
@@ -49,7 +50,10 @@ Future<bool> updateOrderCustomerDetails({
   required int deliveryCharge,
 }) async {
   try {
-    await FirebaseFirestore.instance.collection("userOrders").doc(orderID).update({
+    await FirebaseFirestore.instance
+        .collection("userOrders")
+        .doc(orderID)
+        .update({
       "userName": userName,
       "userPhoneNumber": userPhoneNumber,
       "userPostalCode": userPostalCode,
@@ -76,7 +80,10 @@ Future<bool> updateOrderItems({
       (total, item) => total + item.itemPrice,
     );
 
-    await FirebaseFirestore.instance.collection("userOrders").doc(orderID).update({
+    await FirebaseFirestore.instance
+        .collection("userOrders")
+        .doc(orderID)
+        .update({
       "userOrders": orders.map((item) {
         final itemData = item.toJson();
         itemData["timeStamp"] = item.timestamp;
@@ -101,6 +108,192 @@ Stream<List<UserOrder>> readDeleteHistoryOrders() {
 
   return firestoreUserOrders.map((snapshot) =>
       snapshot.docs.map((doc) => UserOrder.fromMap(doc.data())).toList());
+}
+
+Future<bool> completeOrderAndUpdateStock({
+  required String orderID,
+  required String orderCollectionPath,
+  bool archiveOrderToHistory = true,
+  void Function(String reason)? onFailure,
+}) async {
+  final firestore = FirebaseFirestore.instance;
+  final orderRef = firestore.collection(orderCollectionPath).doc(orderID);
+  final archiveRef = firestore.collection("removeOrders").doc();
+  String? failureReason;
+
+  try {
+    final orderSnapshot = await orderRef.get();
+    final orderData = orderSnapshot.data();
+    if (!orderSnapshot.exists || orderData == null) {
+      failureReason = "The order no longer exists in $orderCollectionPath.";
+      return false;
+    }
+
+    final order = UserOrder.fromMap(orderData);
+    late final Map<String, _StockDeduction> deductions;
+    try {
+      deductions = _groupStockDeductions(order.userOrders);
+    } catch (error) {
+      failureReason =
+          "The order has an invalid item name or collection path: $error";
+      return false;
+    }
+    final inventoryRefs = <String, DocumentReference<Map<String, dynamic>>>{};
+
+    for (final entry in deductions.entries) {
+      final deduction = entry.value;
+      if (deduction.itemId.isNotEmpty) {
+        inventoryRefs[entry.key] = firestore
+            .collection(deduction.collectionPath)
+            .doc(deduction.itemId);
+      } else {
+        // Older orders may not have a saved inventory document ID.
+        final matchingItems = await firestore
+            .collection(deduction.collectionPath)
+            .where("itemName", isEqualTo: deduction.itemName)
+            .limit(2)
+            .get();
+        if (matchingItems.docs.length != 1) {
+          failureReason = matchingItems.docs.isEmpty
+              ? "No item named '${deduction.itemName}' was found in '${deduction.collectionPath}'."
+              : "More than one item named '${deduction.itemName}' exists in '${deduction.collectionPath}'. Add the inventory item ID to this order to resolve it.";
+          return false;
+        }
+        inventoryRefs[entry.key] = matchingItems.docs.single.reference;
+      }
+    }
+
+    final completed = await firestore.runTransaction<bool>((transaction) async {
+      final currentOrderSnapshot = await transaction.get(orderRef);
+      final currentOrderData = currentOrderSnapshot.data();
+      if (!currentOrderSnapshot.exists || currentOrderData == null) {
+        failureReason = "The order was removed before stock could be updated.";
+        return false;
+      }
+
+      final currentOrder = UserOrder.fromMap(currentOrderData);
+      late final Map<String, _StockDeduction> currentDeductions;
+      try {
+        currentDeductions = _groupStockDeductions(currentOrder.userOrders);
+      } catch (error) {
+        failureReason = "The order item data is invalid: $error";
+        return false;
+      }
+      if (!_sameStockDeductions(deductions, currentDeductions)) {
+        failureReason =
+            "The order items changed while the operation was running.";
+        return false;
+      }
+
+      final inventorySnapshots =
+          <String, DocumentSnapshot<Map<String, dynamic>>>{};
+      for (final entry in inventoryRefs.entries) {
+        inventorySnapshots[entry.key] = await transaction.get(entry.value);
+      }
+
+      for (final entry in deductions.entries) {
+        final inventoryData = inventorySnapshots[entry.key]?.data();
+        if (inventoryData == null) {
+          failureReason =
+              "Inventory item '${entry.value.itemName}' (ID: ${entry.value.itemId.isEmpty ? 'not saved' : entry.value.itemId}) was not found in '${entry.value.collectionPath}'.";
+          return false;
+        }
+        final currentCount = inventoryData["itemCount"];
+        if (currentCount is! num || currentCount < entry.value.quantity) {
+          failureReason = currentCount is! num
+              ? "The stock count for '${entry.value.itemName}' is missing or invalid."
+              : "Not enough stock for '${entry.value.itemName}': "
+                  "${currentCount.toInt()} available, ${entry.value.quantity} required.";
+          return false;
+        }
+      }
+
+      for (final entry in deductions.entries) {
+        final currentCount =
+            inventorySnapshots[entry.key]!.data()!["itemCount"] as num;
+        transaction.update(inventoryRefs[entry.key]!, {
+          "itemCount": currentCount.toInt() - entry.value.quantity,
+        });
+      }
+
+      if (archiveOrderToHistory) {
+        final archivedOrder = Map<String, dynamic>.from(currentOrderData)
+          ..["userid"] = archiveRef.id;
+        transaction.set(archiveRef, archivedOrder);
+      }
+      transaction.delete(orderRef);
+      return true;
+    });
+    if (!completed) {
+      failureReason ??=
+          "The order could not be completed because its data changed.";
+    }
+    return completed;
+  } catch (error, stackTrace) {
+    failureReason = "Firestore operation failed: $error";
+    debugPrint("Order stock update failed: $error\n$stackTrace");
+    return false;
+  } finally {
+    if (failureReason != null) {
+      debugPrint("Order stock update details: $failureReason");
+      onFailure?.call(failureReason!);
+    }
+  }
+}
+
+Map<String, _StockDeduction> _groupStockDeductions(List<FoodItem> items) {
+  final deductions = <String, _StockDeduction>{};
+  for (var index = 0; index < items.length; index++) {
+    final item = items[index];
+    final collectionPath = item.collectionPath?.trim() ?? "";
+    final itemName = item.itemName.trim();
+    if (collectionPath.isEmpty || itemName.isEmpty) {
+      throw StateError(
+        "Item ${index + 1} is missing its collection path or item name.",
+      );
+    }
+
+    final itemId = item.id.trim();
+    final identity = itemId.isNotEmpty ? "id:$itemId" : "name:$itemName";
+    final key = "$collectionPath\u0000$identity";
+    final existing = deductions[key];
+    if (existing == null) {
+      deductions[key] = _StockDeduction(
+        collectionPath: collectionPath,
+        itemId: itemId,
+        itemName: itemName,
+        quantity: 1,
+      );
+    } else {
+      existing.quantity++;
+    }
+  }
+  return deductions;
+}
+
+bool _sameStockDeductions(
+  Map<String, _StockDeduction> first,
+  Map<String, _StockDeduction> second,
+) {
+  if (first.length != second.length) return false;
+  for (final entry in first.entries) {
+    if (second[entry.key]?.quantity != entry.value.quantity) return false;
+  }
+  return true;
+}
+
+class _StockDeduction {
+  _StockDeduction({
+    required this.collectionPath,
+    required this.itemId,
+    required this.itemName,
+    required this.quantity,
+  });
+
+  final String collectionPath;
+  final String itemId;
+  final String itemName;
+  int quantity;
 }
 
 //*****************************************************************************
@@ -169,4 +362,19 @@ Future<bool?> deleteOrder(
   }).catchError((error) {
     return false;
   });
+}
+
+Future<bool> deleteOrderPermanently({
+  required String collectionPath,
+  required String orderID,
+}) async {
+  try {
+    await FirebaseFirestore.instance
+        .collection(collectionPath)
+        .doc(orderID)
+        .delete();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }

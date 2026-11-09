@@ -22,7 +22,7 @@ class MyColor {
   static const Color myOrange = Color.fromARGB(255, 175, 53, 9);
   static const Color myRed = error;
   static const Color myWhite = Color(0xFFF6EFE6);
-  static const Color invoicePaper = Color.fromARGB(255, 0, 0, 0);
+  static const Color invoicePaper = Color(0xFFF2F0E8);
   static const Color myBlack = darkBackground;
 
   // Shared utility colors used by older widgets and image overlays.

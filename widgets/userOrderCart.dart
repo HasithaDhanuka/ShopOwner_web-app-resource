@@ -1,6 +1,4 @@
 // ignore_for_file: use_build_context_synchronously
-import 'dart:async';
-
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -13,7 +11,6 @@ import 'package:web_app/Utils/colors.dart';
 import 'package:web_app/Utils/timedate_conventer.dart';
 import 'package:web_app/Utils/view_wrapper.dart';
 import 'package:web_app/firebase/firebase_userOrder.dart';
-import 'package:web_app/invoice_pdf/pdf_api.dart';
 //import 'package:web_app/invoice_pdf/pdf_view_screen.dart';
 import 'package:web_app/model/food.dart';
 import 'package:web_app/model/user_order.dart';
@@ -245,24 +242,40 @@ class _UserOrderCartsState extends State<UserOrderCarts> {
         );
         if (isOrderFinished == true) {
           // print("order is finished :: $isOrderFinished");
+          String? failureReason;
 
-          final removeDatabase = await deleteOrder(
-              orderID: userID, collectionPath: widget.collectionPath);
+          final removeDatabase = await _runWithProcessing<bool?>(
+            context: context,
+            message: widget.collectionPath == "userOrders"
+                ? "Completing order and updating item stock..."
+                : "Deleting history record...",
+            task: () => widget.collectionPath == "userOrders"
+                ? completeOrderAndUpdateStock(
+                    orderID: userID,
+                    orderCollectionPath: widget.collectionPath,
+                    onFailure: (reason) => failureReason = reason,
+                  )
+                : deleteOrder(
+                    orderID: userID,
+                    collectionPath: widget.collectionPath,
+                  ),
+          );
 
           if (removeDatabase == true) {
             isSuccessPopup(
                 context: context,
-                title: "Order Remove Success",
-                msg: "This Order Is Remove In The Data Base",
+                title: "Order Completed",
+                msg: "The order was archived and item stock was updated.",
                 function: () {},
-                isSuccess: removeDatabase!);
+                isSuccess: true);
 
             debugPrint("Order is finished :: $isOrderFinished");
           } else {
             isSuccessPopup(
                 context: context,
                 title: "ERROR",
-                msg: "Cannot Remove This Order",
+                msg: failureReason ??
+                    "The order could not be completed. Check the debug log for details.",
                 function: () {},
                 isSuccess: false);
           }
@@ -323,9 +336,9 @@ class _UserOrderCartsState extends State<UserOrderCarts> {
             dismissible: DismissiblePane(onDismissed: () {}),
             children: [
               SlidableAction(
-                onPressed: (context) {
-                  onTapDrag(
-                    context,
+                onPressed: (_) async {
+                  await onTapDrag(
+                    this.context,
                     userTelephoneNumber: userTelephoneNumber,
                     userPhoneNunberEditingController:
                         userPhoneNunberEditingController,
@@ -439,7 +452,7 @@ class _UserOrderCartsState extends State<UserOrderCarts> {
 
 // ***************************************************************//
 // ###################   Delete Order    ##########################//
-void onTapDrag(
+Future<void> onTapDrag(
   BuildContext context, {
   required int userTelephoneNumber,
   required TextEditingController userPhoneNunberEditingController,
@@ -447,42 +460,118 @@ void onTapDrag(
   required String collectionPath,
   required int indexNumber,
 }) async {
+  var isDirectDelete = false;
   final isOrderFinished = await orderFinished(
       context: context,
       userPhoneNumber: userTelephoneNumber,
-      textEditingController: userPhoneNunberEditingController);
+      textEditingController: userPhoneNunberEditingController,
+      onDirectDeleteCode: () => isDirectDelete = true);
 
   if (isOrderFinished == true) {
-    final removeDatabase =
-        await deleteOrder(orderID: userID, collectionPath: collectionPath);
+    String? failureReason;
+    final removalResult = await _runWithProcessing<bool?>(
+      context: context,
+      message: isDirectDelete
+          ? collectionPath == "userOrders"
+              ? "Deleting order and updating item stock..."
+              : "Deleting order..."
+          : collectionPath == "userOrders"
+              ? "Completing order and updating item stock..."
+              : "Deleting history record...",
+      task: () => isDirectDelete
+          ? collectionPath == "userOrders"
+              ? completeOrderAndUpdateStock(
+                  orderID: userID,
+                  orderCollectionPath: collectionPath,
+                  archiveOrderToHistory: false,
+                  onFailure: (reason) => failureReason = reason,
+                )
+              : deleteOrderPermanently(
+                  orderID: userID,
+                  collectionPath: collectionPath,
+                )
+          : collectionPath == "userOrders"
+              ? completeOrderAndUpdateStock(
+                  orderID: userID,
+                  orderCollectionPath: collectionPath,
+                  onFailure: (reason) => failureReason = reason,
+                )
+              : deleteOrder(
+                  orderID: userID,
+                  collectionPath: collectionPath,
+                ),
+    );
+    final removeDatabase = removalResult == true;
 
-    if (removeDatabase == true) {
-      // print("remove Done");
-    }
-
-    // print("context 01");
-    // if (removeDatabase == true) {
-    //   print("context 02");
-    //   // ignore: use_build_context_synchronously
-    //    isSuccessPopup(
-    //       context: context,
-    //       title: "Order Remove Success",
-    //       msg: "This Order Is Remove In The Data Base",
-    //       function: () {},
-    //       isSuccess: removeDatabase!);
-    // } else {
-    //   // ignore: use_build_context_synchronously
-    //   isSuccessPopup(
-    //       context: context,
-    //       title: "ERROR",
-    //       msg: "Cannot Remove This Order",
-    //       function: () {},
-    //       isSuccess: false);
-    // }
+    if (!context.mounted) return;
+    await isSuccessPopup(
+      context: context,
+      title: removeDatabase
+          ? (isDirectDelete ? "Debug Delete Success" : "Order Completed")
+          : "ERROR",
+      msg: removeDatabase
+          ? (isDirectDelete
+              ? collectionPath == "userOrders"
+                  ? "The order was deleted without history and item stock was updated."
+                  : "The order was permanently deleted without archiving."
+              : collectionPath == "userOrders"
+                  ? "The order was archived and item stock was updated."
+                  : "The history record was deleted.")
+          : failureReason ??
+              "The operation failed. Check the debug log for details.",
+      function: () {},
+      isSuccess: removeDatabase,
+    );
   }
 }
 
+Future<T> _runWithProcessing<T>({
+  required BuildContext context,
+  required String message,
+  required Future<T> Function() task,
+}) async {
+  final navigator = Navigator.of(context, rootNavigator: true);
+  final startedAt = DateTime.now();
+  final processingDialog = showDialog<void>(
+    context: context,
+    useRootNavigator: true,
+    barrierDismissible: false,
+    builder: (_) => PopScope(
+      canPop: false,
+      child: AlertDialog(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(width: 18),
+            Flexible(child: Text(message)),
+          ],
+        ),
+      ),
+    ),
+  );
 
+  try {
+    await WidgetsBinding.instance.endOfFrame;
+    final result = await task();
+    const minimumDisplayTime = Duration(milliseconds: 350);
+    final remainingTime =
+        minimumDisplayTime - DateTime.now().difference(startedAt);
+    if (remainingTime > Duration.zero) {
+      await Future<void>.delayed(remainingTime);
+    }
+    return result;
+  } finally {
+    if (navigator.mounted && navigator.canPop()) {
+      navigator.pop();
+    }
+    await processingDialog;
+  }
+}
 
 // ***************************************************************//
 // ###################   Total Price    ##########################//

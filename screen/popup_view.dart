@@ -332,7 +332,8 @@ Future orderDetails({
 Future<bool?> orderFinished(
         {required BuildContext context,
         required int userPhoneNumber,
-        required TextEditingController textEditingController}) =>
+        required TextEditingController textEditingController,
+        VoidCallback? onDirectDeleteCode}) =>
     showDialog(
         context: context,
         builder: (_) => SingleChildScrollView(
@@ -365,7 +366,6 @@ Future<bool?> orderFinished(
                             Builder(builder: (context) {
                               return reUsableButton(
                                   onPressed: () {
-                                    // ####################### Is Text Field Empty    #####################//
                                     if (textEditingController.text.isEmpty) {
                                       isSuccessPopup(
                                         context: context,
@@ -374,14 +374,34 @@ Future<bool?> orderFinished(
                                         isSuccess: false,
                                         function: () {},
                                       );
+                                      return;
                                     }
+
+                                    final enteredCode = int.tryParse(
+                                        textEditingController.text.trim());
+                                    if (enteredCode == null) {
+                                      isSuccessPopup(
+                                        context: context,
+                                        title: "ERROR",
+                                        msg: "Please enter a valid number",
+                                        isSuccess: false,
+                                        function: () {},
+                                      );
+                                      return;
+                                    }
+
+                                    if (enteredCode == 999 &&
+                                        onDirectDeleteCode != null) {
+                                      onDirectDeleteCode();
+                                      textEditingController.clear();
+                                      Navigator.of(context).pop(true);
+                                      return;
+                                    }
+
                                     // ####################### Is Text Field Match    #####################//
                                     if (userPhoneNumber ==
-                                            int.parse(
-                                                textEditingController.text) ||
-                                        888 ==
-                                            int.parse(
-                                                textEditingController.text)) {
+                                            enteredCode ||
+                                        888 == enteredCode) {
                                       textEditingController.clear();
                                       Navigator.of(context).pop(true);
                                     }
